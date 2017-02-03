@@ -1,5 +1,5 @@
 import { Pos } from "../line/pos"
-import { prepareMeasureForLine, measureCharPrepared } from "../measurement/position_measurement"
+import { prepareMeasureForLine, measureCharPrepared, wrappedLineExtentChar } from "../measurement/position_measurement"
 import { bidiLeft, bidiRight, getBidiPartAt, getOrder, lineLeft, lineRight, moveLogically } from "../util/bidi"
 import { findFirst } from "../util/misc"
 
@@ -33,16 +33,6 @@ export function endOfLine(visually, cm, lineObj, lineNo, dir) {
   return new Pos(lineNo, ch, sticky)
 }
 
-function getVisualLineAround(cm, line, target) {
-  if (!cm.options.lineWrapping) return [0, line.text.length - 1]
-  let prep = prepareMeasureForLine(cm, line)
-  let targetTop = measureCharPrepared(cm, prep, target).top
-  return [
-    findFirst(ch => targetTop == measureCharPrepared(cm, prep, ch).top, 0, target),
-    findFirst(ch => targetTop == measureCharPrepared(cm, prep, ch).top, line.text.length - 1, target)
-  ]
-}
-
 export function moveVisually(cm, line, start, dir) {
   let mkPos = (ch, sticky) => ch == null ? null : new Pos(start.line, ch, sticky)
   let mv = (pos, dir) => moveLogically(line, pos instanceof Pos ? pos : new Pos(start.line, pos), dir)
@@ -62,12 +52,17 @@ export function moveVisually(cm, line, start, dir) {
     return mkPos(mv(start, dir), dir < 0 ? "after" : "before")
   }
 
-  let getVisualLine = ch => getVisualLineAround(cm, line, ch)
-  let visualLine = getVisualLine(start.sticky == "before" ? mv(start, -1) : start.ch)
+  let prep
+  let getWrappedLineExtent = ch => {
+    if (!cm.options.lineWrapping) return {begin: 0, end: line.text.length}
+    prep = prep || prepareMeasureForLine(cm, line)
+    return wrappedLineExtentChar(cm, line, prep, ch)
+  }
+  let wrappedLineExtent = getWrappedLineExtent(start.sticky == "before" ? mv(start, -1) : start.ch)
 
   if (part.level % 2 == 1) {
     let ch = mv(start, -dir)
-    if (ch != null && (dir > 0 ? ch >= part.from && ch >= visualLine[0] : ch <= part.to && ch <= mv(visualLine[1], 1))) {
+    if (ch != null && (dir > 0 ? ch >= part.from && ch >= wrappedLineExtent.begin : ch <= part.to && ch <= wrappedLineExtent.end)) {
       // Case 2: We move within an rtl part on the same visual line
       let sticky = dir < 0 ? "before" : "after"
       return new Pos(start.line, ch, sticky)
@@ -77,7 +72,7 @@ export function moveVisually(cm, line, start, dir) {
   // Case 3: Could not move within this bidi part in this visual line, so leave
   // the current bidi part
 
-  let searchInVisualLine = (partPos, dir, visualLine) => {
+  let searchInVisualLine = (partPos, dir, wrappedLineExtent) => {
     let getRes = (ch, moveInStorageOrder) => moveInStorageOrder
       ? new Pos(start.line, mv(ch, 1), "before")
       : new Pos(start.line, ch, "after")
@@ -85,21 +80,21 @@ export function moveVisually(cm, line, start, dir) {
     for (; partPos >= 0 && partPos < bidi.length; partPos += dir) {
       let part = bidi[partPos]
       let moveInStorageOrder = (dir > 0) == (part.level != 1)
-      let ch = moveInStorageOrder ? visualLine[0] : visualLine[1]
+      let ch = moveInStorageOrder ? wrappedLineExtent.begin : mv(wrappedLineExtent.end, -1)
       if (part.from <= ch && ch < part.to) return getRes(ch, moveInStorageOrder)
       ch = moveInStorageOrder ? part.from : mv(part.to, -1)
-      if (visualLine[0] <= ch && ch <= visualLine[1]) return getRes(ch, moveInStorageOrder)
+      if (wrappedLineExtent.begin <= ch && ch < wrappedLineExtent.end) return getRes(ch, moveInStorageOrder)
     }
   }
 
   // Case 3a: Look for other bidi parts on the same visual line
-  let res = searchInVisualLine(partPos + dir, dir, visualLine)
+  let res = searchInVisualLine(partPos + dir, dir, wrappedLineExtent)
   if (res) return res
 
   // Case 3b: Look for other bidi parts on the next visual line
-  let nextCh = mv(visualLine[dir > 0 ? 1 : 0], dir)
+  let nextCh = dir > 0 ? wrappedLineExtent.end : mv(wrappedLineExtent.begin, -1)
   if (nextCh != null && !(dir > 0 && nextCh == line.text.length)) {
-    res = searchInVisualLine(dir > 0 ? 0 : bidi.length - 1, dir, getVisualLine(nextCh))
+    res = searchInVisualLine(dir > 0 ? 0 : bidi.length - 1, dir, getWrappedLineExtent(nextCh))
     if (res) return res
   }
 
